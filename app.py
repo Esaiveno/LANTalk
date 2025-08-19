@@ -334,6 +334,14 @@ def handle_file_upload_complete(data):
             # 保存到全局消息历史
             global_messages.append(file_message)
             
+            # 同时保存到发送者的个人聊天记录（用于备份）
+            if client_ip not in chat_history:
+                chat_history[client_ip] = []
+            chat_history[client_ip].append(file_message)
+            
+            # 先向发送者确认消息已发送
+            emit('message_sent', {'ip': client_ip})
+            
             # 广播消息
             emit('new_message', file_message, broadcast=True)
             

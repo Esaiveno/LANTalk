@@ -35,6 +35,10 @@ let userAvatars = {};
 // 拖拽状态
 let isDragOver = false;
 
+// 文件分块传输阈值
+const CHUNK_THRESHOLD = 10 * 1024 * 1024; // 10MB阈值
+const CHUNK_SIZE = 10 * 1024 * 1024; // 10MB分块大小
+
 // 自定义确认对话框
 function showConfirm(title, message) {
     return new Promise((resolve) => {
@@ -587,7 +591,6 @@ function sendFileDirectly(file, message) {
 
 // 分块发送大文件
 function sendFileInChunks(file, message) {
-    const CHUNK_SIZE = 10 * 1024 * 1024; // 10MB
     const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
     const fileId = generateUUID();
     let currentChunk = 0;
@@ -712,7 +715,6 @@ function sendMessage() {
             const fileToSend = selectedFile; // 保存文件引用
             
             // 检查文件大小，决定使用普通传输还是分块传输
-            const CHUNK_THRESHOLD = 10 * 1024 * 1024; // 10MB阈值
             
             if (fileToSend.size > CHUNK_THRESHOLD) {
                 // 大文件分块传输
@@ -862,28 +864,46 @@ function initializeDragAndDrop() {
     
     async function handleDrop(e) {
         const dt = e.dataTransfer;
-        const files = dt.files;
+        const items = dt.items;
         
-        if (files.length > 0) {
-            const file = files[0];
-            
-            // 确认对话框
-            const isImage = file.type.startsWith('image/');
-            const fileType = isImage ? '图片' : '文件';
-            let fileSize;
-            if (file.size >= 1024 * 1024) {
-                fileSize = (file.size / (1024 * 1024)).toFixed(1) + ' MB';
-            } else {
-                fileSize = (file.size / 1024).toFixed(1) + ' KB';
+        if (items && items.length > 0) {
+            // 检查是否有文件夹
+            let hasFolder = false;
+            for (let i = 0; i < items.length; i++) {
+                if (items[i].webkitGetAsEntry && items[i].webkitGetAsEntry().isDirectory) {
+                    hasFolder = true;
+                    break;
+                }
             }
-            const confirmMessage = `确定要发送这个${fileType}吗？\n\n文件名: ${file.name}\n大小: ${fileSize}`;
             
-            const confirmed = await showConfirm(`发送${fileType}`, confirmMessage);
-            if (confirmed) {
-                if (isImage) {
-                    handleImageFile(file);
-                } else {
-                    handleNonImageFile(file);
+            if (hasFolder) {
+                // 处理文件夹拖拽
+                await handleFolderDrop(items);
+            } else {
+                // 处理单个文件拖拽（保持原有逻辑）
+                const files = dt.files;
+                if (files.length > 0) {
+                    const file = files[0];
+                    
+                    // 确认对话框
+                    const isImage = file.type.startsWith('image/');
+                    const fileType = isImage ? '图片' : '文件';
+                    let fileSize;
+                    if (file.size >= 1024 * 1024) {
+                        fileSize = (file.size / (1024 * 1024)).toFixed(1) + ' MB';
+                    } else {
+                        fileSize = (file.size / 1024).toFixed(1) + ' KB';
+                    }
+                    const confirmMessage = `确定要发送这个${fileType}吗？\n\n文件名: ${file.name}\n大小: ${fileSize}`;
+                    
+                    const confirmed = await showConfirm(`发送${fileType}`, confirmMessage);
+                    if (confirmed) {
+                        if (isImage) {
+                            handleImageFile(file);
+                        } else {
+                            handleNonImageFile(file);
+                        }
+                    }
                 }
             }
         }
@@ -932,6 +952,419 @@ function handleNonImageFile(file) {
     messageInput.disabled = true;
     // 拖拽上传后自动发送
     sendMessage();
+}
+
+// 处理文件夹拖拽
+async function handleFolderDrop(items) {
+    const allFiles = [];
+    let folderName = '';
+    
+    // 遍历所有拖拽项目
+    for (let i = 0; i < items.length; i++) {
+        const item = items[i];
+        if (item.webkitGetAsEntry) {
+            const entry = item.webkitGetAsEntry();
+            if (entry) {
+                if (!folderName && entry.isDirectory) {
+                    folderName = entry.name;
+                }
+                await traverseFileTree(entry, allFiles);
+            }
+        }
+    }
+    
+    if (allFiles.length === 0) {
+        showToast('文件夹中没有找到文件', 'warning');
+        return;
+    }
+    
+    // 计算总大小
+    let totalSize = 0;
+    for (const file of allFiles) {
+        totalSize += file.size;
+    }
+    
+    // 检查总大小限制
+    if (totalSize > 2 * 1024 * 1024 * 1024) {
+        showToast('文件夹总大小不能超过2GB', 'warning');
+        return;
+    }
+    
+    // 显示确认对话框
+    const totalSizeText = totalSize >= 1024 * 1024 ? 
+        (totalSize / (1024 * 1024)).toFixed(1) + ' MB' : 
+        (totalSize / 1024).toFixed(1) + ' KB';
+    
+    const confirmMessage = `确定要发送这个文件夹吗？\n\n文件夹名: ${folderName || '未知文件夹'}\n文件数量: ${allFiles.length}\n总大小: ${totalSizeText}\n\n文件夹将被压缩为ZIP文件发送`;
+    
+    const confirmed = await showConfirm('发送文件夹', confirmMessage);
+    if (confirmed) {
+        await compressAndUploadFolder(allFiles, folderName || 'folder');
+    }
+}
+
+// 遍历文件树
+function traverseFileTree(item, allFiles, path = '') {
+    return new Promise((resolve) => {
+        if (item.isFile) {
+            item.file((file) => {
+                // 保存文件的相对路径
+                file.relativePath = path + file.name;
+                allFiles.push(file);
+                resolve();
+            });
+        } else if (item.isDirectory) {
+            const dirReader = item.createReader();
+            dirReader.readEntries(async (entries) => {
+                const promises = [];
+                for (const entry of entries) {
+                    promises.push(traverseFileTree(entry, allFiles, path + item.name + '/'));
+                }
+                await Promise.all(promises);
+                resolve();
+            });
+        } else {
+            resolve();
+        }
+    });
+}
+
+// 压缩并上传文件夹
+async function compressAndUploadFolder(files, folderName) {
+    try {
+        showProgress('正在压缩文件夹...');
+        
+        // 创建ZIP文件
+        const zip = new JSZip();
+        
+        // 添加文件到ZIP
+        for (let i = 0; i < files.length; i++) {
+            const file = files[i];
+            const relativePath = file.relativePath || file.name;
+            
+            // 更新进度
+            const percent = (i / files.length) * 50; // 压缩阶段占50%
+            updateProgress(percent);
+            document.getElementById('progressTitle').textContent = `正在压缩文件夹... (${i + 1}/${files.length}) - ${file.name}`;
+            
+            // 读取文件内容并添加到ZIP
+            const fileContent = await readFileAsArrayBuffer(file);
+            zip.file(relativePath, fileContent);
+        }
+        
+        // 生成ZIP文件
+        document.getElementById('progressTitle').textContent = '正在生成ZIP文件...';
+        updateProgress(75);
+        
+        const zipBlob = await zip.generateAsync({
+            type: 'blob',
+            compression: 'DEFLATE',
+            compressionOptions: {
+                level: 6
+            }
+        });
+        
+        // 创建ZIP文件对象
+        const zipFileName = `${folderName}.zip`;
+        const zipFile = new File([zipBlob], zipFileName, {
+            type: 'application/zip'
+        });
+        
+        // 检查压缩后的文件大小
+        if (zipFile.size > 2 * 1024 * 1024 * 1024) {
+            hideProgress();
+            showToast('压缩后的文件大小超过2GB限制', 'error');
+            return;
+        }
+        
+        // 上传ZIP文件
+        document.getElementById('progressTitle').textContent = '正在上传ZIP文件...';
+        updateProgress(80);
+        
+        // 显示文件信息并发送
+        const zipSizeText = zipFile.size >= 1024 * 1024 ? 
+            (zipFile.size / (1024 * 1024)).toFixed(1) + ' MB' : 
+            (zipFile.size / 1024).toFixed(1) + ' KB';
+        
+        const message = `📁 ${zipFileName} (${zipSizeText})`;
+        
+        // 根据文件大小选择上传方式
+        if (zipFile.size <= CHUNK_THRESHOLD) {
+            await uploadSingleFile(zipFile, message);
+        } else {
+            await uploadLargeFile(zipFile, message);
+        }
+        
+        hideProgress();
+        showToast(`文件夹已压缩并发送: ${zipFileName}`, 'success');
+        
+    } catch (error) {
+        hideProgress();
+        console.error('文件夹压缩上传失败:', error);
+        showToast('文件夹压缩上传失败: ' + error.message, 'error');
+    }
+}
+
+// 读取文件为ArrayBuffer
+function readFileAsArrayBuffer(file) {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = () => reject(reader.error);
+        reader.readAsArrayBuffer(file);
+    });
+}
+
+// 上传单个文件（用于ZIP文件）
+function uploadSingleFile(file, message) {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        
+        reader.onload = function(e) {
+            socket.emit('send_message', {
+                type: 'file',
+                message: message,
+                file_data: {
+                    name: file.name,
+                    size: file.size,
+                    type: file.type,
+                    data: e.target.result
+                }
+            }, function(response) {
+                resolve();
+            });
+        };
+        
+        reader.onerror = function() {
+            reject(new Error('文件读取失败'));
+        };
+        
+        reader.readAsDataURL(file);
+    });
+}
+
+// 上传大文件（用于ZIP文件）
+function uploadLargeFile(file, message) {
+    return new Promise((resolve, reject) => {
+        const fileId = generateUUID();
+        const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
+        let currentChunk = 0;
+        
+        function sendNextChunk() {
+            if (currentChunk >= totalChunks) {
+                // 所有分块发送完成
+                socket.emit('file_upload_complete', {
+                    fileId: fileId,
+                    message: message
+                });
+                return;
+            }
+            
+            const start = currentChunk * CHUNK_SIZE;
+            const end = Math.min(start + CHUNK_SIZE, file.size);
+            const chunk = file.slice(start, end);
+            
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                socket.emit('file_chunk', {
+                    fileId: fileId,
+                    chunkIndex: currentChunk,
+                    totalChunks: totalChunks,
+                    fileName: file.name,
+                    fileSize: file.size,
+                    fileType: file.type,
+                    data: e.target.result
+                });
+            };
+            
+            reader.readAsDataURL(chunk);
+        }
+        
+        // 监听分块确认
+        const chunkAckHandler = (data) => {
+            if (data.success) {
+                currentChunk++;
+                const percent = 80 + (currentChunk / totalChunks) * 20; // 上传阶段占20%
+                updateProgress(percent);
+                sendNextChunk();
+            } else {
+                cleanup();
+                reject(new Error('分块上传失败'));
+            }
+        };
+        
+        // 监听上传完成确认
+        const messageSentHandler = (data) => {
+            cleanup();
+            resolve();
+        };
+        
+        // 清理事件监听器
+        function cleanup() {
+            socket.off('file_chunk_ack', chunkAckHandler);
+            socket.off('message_sent', messageSentHandler);
+        }
+        
+        socket.on('file_chunk_ack', chunkAckHandler);
+        socket.on('message_sent', messageSentHandler);
+        
+        // 开始发送第一个分块
+        sendNextChunk();
+    });
+}
+
+// 上传多个文件
+async function uploadMultipleFiles(files) {
+    showProgress(`正在上传文件夹 (0/${files.length})`);
+    
+    let uploadedCount = 0;
+    let totalBytes = 0;
+    let uploadedBytes = 0;
+    
+    // 计算总字节数
+    for (const file of files) {
+        totalBytes += file.size;
+    }
+    
+    // 初始化速度统计
+    uploadStartTime = Date.now();
+    
+    for (const file of files) {
+        try {
+            // 更新进度标题
+            document.getElementById('progressTitle').textContent = 
+                `正在上传文件夹 (${uploadedCount + 1}/${files.length}) - ${file.relativePath || file.name}`;
+            
+            // 根据文件大小选择上传方式
+            if (file.size <= CHUNK_THRESHOLD) {
+                await uploadSingleFileInFolder(file);
+            } else {
+                await uploadLargeFileInFolder(file);
+            }
+            
+            uploadedCount++;
+            uploadedBytes += file.size;
+            
+            // 更新总体进度
+            const percent = (uploadedBytes / totalBytes) * 100;
+            updateProgress(percent, uploadedBytes, totalBytes);
+            
+        } catch (error) {
+            console.error(`文件上传失败: ${file.name}`, error);
+            showToast(`文件上传失败: ${file.name}`, 'error');
+        }
+    }
+    
+    hideProgress();
+    showToast(`文件夹上传完成，共上传 ${uploadedCount} 个文件`, 'success');
+}
+
+// 上传文件夹中的单个小文件
+function uploadSingleFileInFolder(file) {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        
+        reader.onload = function(e) {
+            const message = file.relativePath ? `📁 ${file.relativePath}` : file.name;
+            
+            socket.emit('send_message', {
+                type: 'file',
+                message: message,
+                file_data: {
+                    name: file.relativePath || file.name,
+                    size: file.size,
+                    type: file.type,
+                    data: e.target.result
+                }
+            }, function(response) {
+                resolve();
+            });
+        };
+        
+        reader.onerror = function() {
+            reject(new Error('文件读取失败'));
+        };
+        
+        reader.readAsDataURL(file);
+    });
+}
+
+// 上传文件夹中的单个大文件
+function uploadLargeFileInFolder(file) {
+    return new Promise((resolve, reject) => {
+        const fileId = generateUUID();
+        const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
+        let currentChunk = 0;
+        let transferredBytes = 0;
+        
+        function sendNextChunk() {
+            if (currentChunk >= totalChunks) {
+                // 所有分块发送完成
+                const message = file.relativePath ? `📁 ${file.relativePath}` : file.name;
+                socket.emit('file_upload_complete', {
+                    fileId: fileId,
+                    message: message
+                });
+                resolve();
+                return;
+            }
+            
+            const start = currentChunk * CHUNK_SIZE;
+            const end = Math.min(start + CHUNK_SIZE, file.size);
+            const chunk = file.slice(start, end);
+            
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                socket.emit('file_chunk', {
+                    fileId: fileId,
+                    chunkIndex: currentChunk,
+                    totalChunks: totalChunks,
+                    fileName: file.relativePath || file.name,
+                    fileSize: file.size,
+                    fileType: file.type,
+                    data: e.target.result
+                });
+            };
+            
+            reader.readAsDataURL(chunk);
+        }
+        
+        // 监听分块确认
+        const chunkAckHandler = (data) => {
+            if (data.success) {
+                transferredBytes += Math.min(CHUNK_SIZE, file.size - currentChunk * CHUNK_SIZE);
+                currentChunk++;
+                sendNextChunk();
+            } else {
+                cleanup();
+                reject(new Error('分块上传失败'));
+            }
+        };
+        
+        // 监听上传完成确认
+        const messageSentHandler = (data) => {
+            cleanup();
+            resolve();
+        };
+        
+        socket.on('file_chunk_ack', chunkAckHandler);
+        socket.on('message_sent', messageSentHandler);
+        
+        // 开始发送第一个分块
+        sendNextChunk();
+        
+        // 清理监听器
+        const cleanup = () => {
+            socket.off('file_chunk_ack', chunkAckHandler);
+            socket.off('message_sent', messageSentHandler);
+        };
+        
+        // 设置超时
+        setTimeout(() => {
+            cleanup();
+            reject(new Error('上传超时'));
+        }, 300000); // 5分钟超时
+    });
 }
 
 // 设置事件监听器
