@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LANTalk - 局域网聊天</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <div class="chat-container">
+        <div class="chat-header">
+            <img src="{{ url_for('static', filename='images/思考.png') }}" alt="LANTalk Logo">
+            <span class="logo-text">LANTalk - 局域网聊天室</span>
+        </div>
+        
+        <div class="status-bar">
+            <div class="status-left">
+                <span class="connection-status disconnected" id="connectionStatus"></span>
+                <span id="statusText">正在连接...</span>
+            </div>
+            <div class="status-center">
+                在线人数: <span id="onlineCount">0</span>
+            </div>
+            <div class="status-right">
+                你的IP: <span id="userIP">获取中...</span>
+            </div>
+        </div>
+        
+        <div class="chat-messages" id="chatMessages">
+            <!-- 消息将在这里显示 -->
+        </div>
+        
+        <div class="chat-input">
+            <div class="input-container">
+                <div class="image-preview-container" id="imagePreviewContainer">
+                    <img class="image-preview" id="imagePreview" alt="图片预览">
+                    <button class="remove-image" id="removeImage">×</button>
+                </div>
+                <textarea class="input-field" id="messageInput" placeholder="输入消息..." maxlength="500" rows="1"></textarea>
+            </div>
+            <div class="button-group">
+                <input type="file" class="image-input" id="imageInput" accept="image/*">
+                <input type="file" class="file-input" id="fileInput" accept="*/*">
+                <button class="image-button" id="imageButton" title="发送图片">
+                    <img src="{{ url_for('static', filename='images/图片.png') }}" alt="发送图片" style="width: 16px; height: 16px;">
+                </button>
+                <button class="file-button" id="fileButton" title="发送文件">📎</button>
+                <button class="send-button" id="sendButton">发送</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="{{ url_for('static', filename='js/chat.js') }}"></script>
+    
+    <!-- Toast 通知容器 -->
+    <div id="toastContainer" class="toast-container"></div>
+    
+    <!-- 进度条遮罩层 -->
+    <div id="progressOverlay" class="progress-overlay"></div>
+    
+    <!-- 进度条容器 -->
+    <div id="progressContainer" class="progress-container">
+        <div id="progressTitle" class="progress-title">正在上传文件...</div>
+        <div class="progress-bar-container">
+            <div id="progressBar" class="progress-bar"></div>
+        </div>
+        <div class="progress-info">
+            <div id="progressText" class="progress-text">0%</div>
+            <div id="speedText" class="speed-text">0 KB/s</div>
+        </div>
+    </div>
+    
+    <!-- 自定义确认对话框 -->
+    <div id="confirmModal" class="confirm-modal">
+        <div class="confirm-modal-content">
+            <div class="confirm-modal-header">
+                <h3 id="confirmTitle">确认操作</h3>
+            </div>
+            <div class="confirm-modal-body">
+                <p id="confirmMessage">确定要执行此操作吗？</p>
+            </div>
+            <div class="confirm-modal-footer">
+                <button id="confirmCancel" class="confirm-btn confirm-btn-cancel">取消</button>
+                <button id="confirmOk" class="confirm-btn confirm-btn-ok">确定</button>
+            </div>
+        </div>
+    </div>
+    
+    <!-- 图片查看器 -->
+    <div id="imageViewer" class="image-viewer">
+        <div class="image-viewer-overlay"></div>
+        <div class="image-viewer-content">
+            <button class="image-viewer-close" id="imageViewerClose">×</button>
+            <button class="image-viewer-prev" id="imageViewerPrev">‹</button>
+            <button class="image-viewer-next" id="imageViewerNext">›</button>
+            <img id="imageViewerImg" class="image-viewer-img" alt="查看图片">
+            <div class="image-viewer-info">
+                <span id="imageViewerCounter">1 / 1</span>
+            </div>
+        </div>
+    </div>
+</body>
+</html>
